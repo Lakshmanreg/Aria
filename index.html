@@ -247,6 +247,7 @@ textarea#inp::placeholder{color:var(--muted)}
   </div>
   <div class="hdr-actions">
     <button class="icon-btn" id="tts-toggle" title="Toggle voice output" onclick="toggleTTS()">🔊</button>
+    <button class="icon-btn" onclick="showApiKeyModal()" title="API Key Settings">⚙️</button>
     <button class="icon-btn" onclick="clearChat()" title="Clear chat">⟳</button>
   </div>
 </div>
@@ -279,6 +280,21 @@ textarea#inp::placeholder{color:var(--muted)}
   <span>MODE: <span id="s-mode">GENERAL</span></span>
   <span>TURNS: <span id="s-turns">0</span></span>
   <span class="s-online" id="s-status">● ONLINE</span>
+</div>
+
+<!-- API Key Modal -->
+<div id="api-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:999;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#0d1528;border:1px solid rgba(0,200,255,0.3);border-radius:14px;padding:24px;width:100%;max-width:380px;">
+    <div style="font-size:16px;font-weight:600;margin-bottom:6px;">⚙️ Groq API Key</div>
+    <div style="font-size:12px;color:rgba(180,220,240,0.6);font-family:'Share Tech Mono',monospace;margin-bottom:16px;">Get your free key at console.groq.com</div>
+    <input id="api-key-input" type="password" placeholder="gsk_xxxxxxxxxxxxxxxx"
+      style="width:100%;background:rgba(0,200,255,0.05);border:1px solid rgba(0,200,255,0.2);border-radius:8px;color:#cde8f5;font-family:'Share Tech Mono',monospace;font-size:13px;padding:10px 13px;outline:none;margin-bottom:14px;box-sizing:border-box;"/>
+    <div style="display:flex;gap:8px;">
+      <button onclick="saveApiKey()" style="flex:1;padding:10px;border-radius:8px;border:1px solid #00c8ff;background:rgba(0,200,255,0.1);color:#00c8ff;font-size:14px;cursor:pointer;">Save Key</button>
+      <button onclick="closeApiModal()" style="padding:10px 16px;border-radius:8px;border:1px solid rgba(0,200,255,0.15);background:transparent;color:rgba(180,220,240,0.5);font-size:14px;cursor:pointer;">Cancel</button>
+    </div>
+    <div style="font-size:11px;color:rgba(180,220,240,0.4);margin-top:12px;font-family:'Share Tech Mono',monospace;">🔒 Stored locally on your device only</div>
+  </div>
 </div>
 
 <!-- Input Area -->
@@ -515,26 +531,47 @@ async function send() {
 
   const typing = addMsg('aria', '', true);
 
+  const apiKey = localStorage.getItem('groq_api_key');
+  if (!apiKey) {
+    typing.remove();
+    busy = false;
+    document.getElementById('send-btn').disabled = false;
+    document.getElementById('s-status').className = 's-online';
+    document.getElementById('s-status').textContent = '● ONLINE';
+    setStatus('Ready');
+    showApiKeyModal();
+    return;
+  }
+
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method:'POST',
-      headers:{'Content-Type':'application/json'},
+      headers:{
+        'Content-Type':'application/json',
+        'Authorization': 'Bearer ' + apiKey
+      },
       body:JSON.stringify({
-        model:'claude-sonnet-4-20250514',
+        model:'llama3-70b-8192',
         max_tokens:1000,
-        system:MODES[mode].sys,
-        messages:history
+        messages:[
+          { role:'system', content: MODES[mode].sys },
+          ...history
+        ]
       })
     });
     const data = await res.json();
-    const reply = data.content?.[0]?.text || 'Error getting response.';
+    if (data.error) throw new Error(data.error.message);
+    const reply = data.choices?.[0]?.message?.content || 'Error getting response.';
     typing.remove();
     addMsg('aria', reply);
     history.push({ role:'assistant', content:reply });
     if (ttsOn) speakText(null, reply);
   } catch(e) {
     typing.remove();
-    addMsg('aria','**Network error.** Could not reach ARIA\'s neural core. Check your connection and try again.');
+    const msg = e.message?.includes('401') || e.message?.includes('invalid')
+      ? '**Invalid API key.** Please tap ⚙️ to update your Groq API key.'
+      : '**Network error.** Could not reach ARIA\'s neural core. Check your connection and try again.';
+    addMsg('aria', msg);
   }
 
   busy = false;
@@ -576,9 +613,36 @@ inp.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
 
+// ── API KEY MODAL ──
+function showApiKeyModal() {
+  const modal = document.getElementById('api-modal');
+  modal.style.display = 'flex';
+  const existing = localStorage.getItem('groq_api_key');
+  if (existing) document.getElementById('api-key-input').value = existing;
+  setTimeout(() => document.getElementById('api-key-input').focus(), 100);
+}
+function closeApiModal() {
+  document.getElementById('api-modal').style.display = 'none';
+}
+function saveApiKey() {
+  const val = document.getElementById('api-key-input').value.trim();
+  if (!val || !val.startsWith('gsk_')) {
+    showToast('Invalid key — must start with gsk_');
+    return;
+  }
+  localStorage.setItem('groq_api_key', val);
+  closeApiModal();
+  showToast('API key saved! ARIA is ready ✓');
+}
+
 // ── INIT ──
 buildModes();
 buildQuick();
+
+// Show API key modal on first load if no key saved
+if (!localStorage.getItem('groq_api_key')) {
+  setTimeout(showApiKeyModal, 800);
+}
 
 // preload voices
 if (window.speechSynthesis) {
